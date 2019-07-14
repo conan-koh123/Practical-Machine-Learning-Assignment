@@ -1,0 +1,314 @@
+---
+title: "Project for practical machine learning (Coursera)"
+output: rmarkdown::github_document
+---
+
+```{r setup, set.seed(131)}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE, cache = TRUE)
+```
+
+### Background:
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+### Data preparation and feature selection: 
+Firstly, I imported the training and testing dataset. I replaced the data "#DIV/0!" as NA in the training set. After which, I dropped all the columns with no values and examined the data using summary()
+
+```{r}
+#import dataset
+train <- read.csv("C:/Users/leafy/Desktop/Courses/Practical Machine Learning/pml-training.csv")
+test <- read.csv("C:/Users/leafy/Desktop/Courses/Practical Machine Learning/pml-testing.csv")
+
+# replace #DIV/0! as NA in training set
+for (i in colnames(train)[7:length(colnames(train)) - 1 ]){
+  train[[i]] <- gsub("#DIV/0!", "", train[[i]])
+  train[[i]] <- as.numeric(train[[i]])
+}
+
+# drop all columns with no values
+library(janitor)
+train <- train %>% remove_empty(c("cols"))
+
+#str(train)
+#summary(train)
+
+#str(test)
+#summary(test)
+```
+
+
+I plotted the outcome variable "classes" from the training dataset using ggplot function. 
+
+
+```{r}
+#data exploration of outcome variable: classe
+library(ggplot2)
+ggplot(train, aes(x=factor(classe)))+
+  geom_bar(stat="count", width=0.7, fill="steelblue")+
+  xlab("Classe in training data") + ylab("Frequency")+
+  theme_minimal()
+```
+
+
+Following which, I plotted the missingness of the training dataset.Despite the clustering of the graph, it does show that there are many variables with more than 80% missing values. These variables need to be excluded as it is difficult to impute these variables.  
+
+
+```{r}
+#check for missing data
+library(healthcareai)
+missingness(train) %>% 
+  plot()
+
+#identify variables with more than 20% missing data
+missing_data_variable <- c(NA)
+
+for (i in colnames(train)){
+  number <- sum(is.na(train[[i]]))/nrow(train) * 100
+  if (number >= 80){
+    missing_data_variable <- c(missing_data_variable, i)
+  }
+}
+
+missing_data_variable <- missing_data_variable[2:length(missing_data_variable)]
+```
+
+
+Variables with more than 80% of missing values were excluded.Prior to model selection, I separated the dataset into training, test and validation dataset using the respective percentages: 60%, 20% and 20%. I preprocessed the training dataset using "knnImpute" method and using this preprocess template, I imputed the missing values of training, test and validation dataset using KNN method (It seems from the graph above that there is no missing data. However, I am doing this in case the percentage of missing data is too small to be detected from the graph).
+
+I included all 52 features in my model training, as it was shown using the Boruta Package that all 52 features are important (Not shown here as it slowed down the processing time for this document).
+
+
+```{r}
+#selecting relevant variables and remove variables more than 20% missing data
+library(dplyr)
+train_1 <- train %>% select(colnames(train)[7:length(colnames(train))])
+for (i in missing_data_variable){
+  train_1 <- train_1 %>% select(-i)
+}
+
+#separate data into training and test/validation set
+library(caret)
+inTrain <- createDataPartition(y = train_1$classe,
+                               p = 0.60,
+                               list = FALSE)
+training <- train_1[inTrain,]
+testvalid <- train_1[-inTrain,]
+
+inTest <- createDataPartition(y = testvalid$classe,
+                               p = 0.5,
+                               list = FALSE)
+testing <- testvalid[inTest,]
+validation <- testvalid[-inTest,]
+
+library(RANN)
+#using k-nearest neighbour imputation to impute data.
+#use training data to impute data for testing set
+#consider MICE???
+preObj <- preProcess(training[, - 53], method = "knnImpute")
+capAve_train <- predict(preObj, training[,- 53])
+train_impute <- cbind(capAve_train, training$classe)
+names(train_impute)[names(train_impute)== "training$classe"] <- "classe"
+capAve_test <- predict(preObj, testing[,- 53])
+test_impute <- cbind(capAve_test, testing$classe)
+names(test_impute)[names(test_impute)== "testing$classe"] <- "classe"
+capAve_validation <- predict(preObj, validation[,- 53])
+validation_impute <- cbind(capAve_validation, validation$classe)
+names(validation_impute)[names(validation_impute)== "validation$classe"] <- "classe"
+```
+
+### Model training and selection
+
+The first model that I have built was a logistic regression. Using multinom function from nnet, the accuracy of the model (0.73) certainly can be improved on.
+
+
+```{r}
+# first model: glm (logistic regression for multiclass classification)
+library(nnet)
+set.seed(131)
+modelglm <- nnet::multinom(classe ~., data = train_impute)
+# Make predictions
+test_class_glm <- modelglm %>% predict(test_impute)
+
+confusionMatrix(test_impute$classe, test_class_glm)
+```
+
+
+The second model that I have built was a decision tree, using rpart function. The accuracy is similar to the previous logistic regression (0.75).
+
+
+```{r}
+#second model: decision tree (rpart) 
+library(rpart)
+set.seed(131)
+modrpart <- rpart(classe ~., data = train_impute)
+
+# Make predictions
+test_class_rpart <- modrpart  %>% predict(test_impute, type = "class")
+
+confusionMatrix(test_impute$classe, test_class_rpart)
+```
+
+
+Going beyond the course, I have attempted to built a neural network as my third model. The accuracy is certainly better than the previous two models (0.905).
+
+
+```{r}
+#third model: neural network
+library(nnet)
+set.seed(131)
+a = nnet(classe ~., data = train_impute, size= 17, maxit=1000)
+
+library(caret)
+b <- predict(a, newdata=test_impute,type="class")
+b <- as.factor(b)
+confusionMatrix(test_impute$classe, b)
+```
+
+
+The fourth model that I have built was a random forest (Accuracy = 0.994).
+
+
+```{r}
+#Fourth model: random forest ->  all 52 variables are important
+library(randomForest)
+set.seed(131)
+modrf_org <-randomForest(classe ~., data = train_impute)
+
+# Make predictions
+test_class_rf_org <- modrf_org %>% predict(test_impute, type = "class")
+test_prob_rf_org <- modrf_org %>% predict(test_impute, type = "prob")
+confusionMatrix(test_impute$classe, test_class_rf_org)
+```
+
+
+I suspected that overfitting might have occurred as the accuracy seems too good. To overcome this issue, I have attempted to build a regularized random forest model using RRF() function. Even though the accuracy is lower as compared to the previous model, the accuracy is more reasonable (0.987) and it is hoped that the regularized random forest model can better predicted the test set given in the assessment.
+
+
+```{r}
+#Last model: random forest ->  all 52 variables are important
+library(RRF)
+set.seed(131)
+modrf <-RRF(classe ~., data = train_impute)
+
+# Make predictions
+test_class_rf <- modrf %>% predict(test_impute, type = "class")
+test_prob_rf <- modrf %>% predict(test_impute, type = "prob")
+confusionMatrix(test_impute$classe, test_class_rf)
+```
+
+
+From the vapImpPlot() function, the top 5 important predictors from the random forest are: row_belt,pitch_forearm,
+vaw_belt, pitch_belt and roll_forearm.
+
+
+```{r}
+#variable importance
+RRF::varImpPlot(modrf)
+```
+
+
+To determine how good the model is, I have generated the AUC using multiclass.roc() function. The AUC function is 0.999. In addition, I have plotted the ROC curves for all the 5 classes, with the AUC of all the 5 classes being 0.999 - 1.
+
+
+```{r}
+#Multiclass ROC 
+library(pROC)
+library(ROCR)
+multiclass.roc(test_impute$classe, test_prob_rf)
+```
+
+```{r}
+test_prob_rf_df <- as.data.frame(test_prob_rf)
+train_impute_5class <- train_impute %>% mutate(A_class = ifelse(classe == "A", 1, 0)) %>%
+                                        mutate(B_class = ifelse(classe == "B", 1, 0))  %>%
+                                        mutate(C_class = ifelse(classe == "C", 1, 0)) %>%
+                                        mutate(D_class = ifelse(classe == "D", 1, 0)) %>%
+                                        mutate(E_class = ifelse(classe == "E", 1, 0))
+
+test_impute_5class <- test_impute %>% mutate(A_class = ifelse(classe == "A", 1, 0)) %>%
+                                        mutate(B_class = ifelse(classe == "B", 1, 0))  %>%
+                                        mutate(C_class = ifelse(classe == "C", 1, 0)) %>%
+                                        mutate(D_class = ifelse(classe == "D", 1, 0)) %>%
+                                        mutate(E_class = ifelse(classe == "E", 1, 0))
+
+roc_a <- roc(test_impute_5class$A_class, test_prob_rf_df[,1])
+pda <- prediction(test_prob_rf_df[,1], test_impute_5class$A_class)
+pfa <- performance(pda, "tpr","fpr")
+
+roc_b <- roc(test_impute_5class$B_class, test_prob_rf_df[,2])
+pdb <- prediction(test_prob_rf_df[,2], test_impute_5class$B_class)
+pfb <- performance(pda, "tpr","fpr")
+
+roc_c <- roc(test_impute_5class$C_class, test_prob_rf_df[,3])
+pdc <- prediction(test_prob_rf_df[,3], test_impute_5class$C_class)
+pfc <- performance(pda, "tpr","fpr")
+
+roc_d <- roc(test_impute_5class$D_class, test_prob_rf_df[,4])
+pdd <- prediction(test_prob_rf_df[,4], test_impute_5class$D_class)
+pfd <- performance(pda, "tpr","fpr")
+
+roc_e <- roc(test_impute_5class$E_class, test_prob_rf_df[,5])
+pde <- prediction(test_prob_rf_df[,5], test_impute_5class$E_class)
+pfe <- performance(pdb, "tpr","fpr")
+
+par(mfrow=c(2,3))
+plot(pfa, col = "red", xlab = "1 - Specificity", ylab = "Sensitivity")
+title(main="A class")
+text(0.6, 0.6, paste("AUC = ", round(auc(roc_a), digits = 3)))
+plot(pfb, horizontal=TRUE, col = "blue", xlab = "1 - Specificity", ylab = "Sensitivity")
+title(main="B class")
+text(0.6, 0.6, paste("AUC = ", round(auc(roc_b), digits = 3)))
+plot(pfc, col = "orange", xlab = "1 - Specificity", ylab = "Sensitivity")
+title(main="C class")
+text(0.6, 0.6, paste("AUC = ", round(auc(roc_c), digits = 3)))
+plot(pfd, horizontal=TRUE, col = "green", xlab = "1 - Specificity", ylab = "Sensitivity")
+title(main="D class")
+text(0.6, 0.6, paste("AUC = ", round(auc(roc_d), digits = 3)))
+plot(pfe, horizontal=TRUE, col = "purple", xlab = "1 - Specificity", ylab = "Sensitivity")
+title(main="E class")
+text(0.6, 0.6, paste("AUC = ", round(auc(roc_e), digits = 3)))
+```
+
+
+To validate the above model, I used the validation dataset to predict based on the regularized random forest model and determine the accuracy (0.988) as well as multi-class AUC. The multi-class AUC is 0.999. Hence, I will use the regularized random forest model to predict the test set given in the assignment.
+
+
+```{r}
+#accuracy for validation set using regularized random forest
+# Make predictions
+validation_class_rf <- modrf %>% predict(validation_impute, type = "class")
+validation_prob_rf <- modrf %>% predict(validation_impute, type = "prob")
+confusionMatrix(validation_impute$classe, validation_class_rf)
+
+#Multiclass ROC curve
+library(pROC)
+library(ROCR)
+multiclass.roc(validation_impute$classe, validation_prob_rf)
+```
+
+
+I processed the test set similar from the training set: remove the unnecessary variables and impute missing data. Following which, I used the regularised random forest model to predict the classes for the test data. From the summary data, there are 7 A class, 8 B class, 1 C class, 1 D class and 3 E class. 
+
+
+```{r}
+#accuracy for test set from assignment using regularized random forest
+
+#remove unnessary variables from test set
+test_1 <- test %>% select(colnames(test)[8:length(colnames(test))])
+for (i in missing_data_variable){
+  test_1 <- test_1 %>% select(-i)
+}
+
+test_1  <- test_1  %>% remove_empty(c("cols"))
+
+#impute test data
+test_1_impute  <- predict(preObj, test_1 [,- 53])
+
+# Make predictions
+test_1_class_rf <- modrf %>% predict(test_1_impute, type = "class")
+test_1_prob_rf <- modrf %>% predict(test_1_impute, type = "prob")
+test_1_class_rf
+summary(test_1_class_rf)
+```
+
